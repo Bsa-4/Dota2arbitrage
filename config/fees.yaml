@@ -1,0 +1,13 @@
+markets:
+  lisskins:
+    buy_bps: 200     # 2.00% комиссия на покупку
+    sell_bps: 150    # 1.50% комиссия на продажу
+    fixed: 0.05      # фикс в валюте (например 0.05 USD)
+  buff:
+    buy_bps: 250
+    sell_bps: 200
+    fixed: 0.10
+  market_dota2:
+    buy_bps: 100
+    sell_bps: 100
+    fixed: 0.00

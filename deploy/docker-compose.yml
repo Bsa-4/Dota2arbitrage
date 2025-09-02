@@ -1,0 +1,266 @@
+version: "3.9"
+
+name: cs2-arb-dev
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: cs2_postgres
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-arb}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arbpass}
+      POSTGRES_DB: ${POSTGRES_DB:-arbdb}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  pgadmin:
+    image: dpage/pgadmin4:7
+    container_name: cs2_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+
+  redis:
+    image: redis:7
+    container_name: cs2_redis
+    restart: unless-stopped
+    command: ["redis-server","--appendonly","yes","--save","60","1000"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: cs2_rabbitmq
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBIT_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASS:-guest}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MGMT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: cs2_zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: cs2_kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "29092:29092"
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.1
+    container_name: cs2_schema_registry
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "kafka:9092"
+      SCHEMA_REGISTRY_LISTENERS: "http://0.0.0.0:8081"
+    ports:
+      - "8081:8081"
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: cs2_kafka_ui
+    restart: unless-stopped
+    depends_on:
+      - kafka
+      - schema-registry
+    environment:
+      KAFKA_CLUSTERS_0_NAME: dev
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+    ports:
+      - "8080:8080"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: cs2_clickhouse
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-arbch}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-chuser}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-chpass}
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
+    volumes:
+      - clickhousedata:/var/lib/clickhouse
+
+  temporal:
+    image: temporalio/auto-setup
+    container_name: cs2_temporal
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    environment:
+      # ВАЖНО: правильный драйвер
+      DB: postgres12
+      DB_PORT: 5432
+
+      # Доступ к Postgres (контейнер "postgres" из compose)
+      POSTGRES_SEEDS: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-arb}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-arbpass}
+
+      # Имена БД, которые auto-setup создаст и мигрирует
+      POSTGRES_DB: temporal
+      VISIBILITY_DB: postgres12
+      VISIBILITY_POSTGRES_SEEDS: postgres
+      VISIBILITY_POSTGRES_USER: ${POSTGRES_USER:-arb}
+      VISIBILITY_POSTGRES_PWD: ${POSTGRES_PASSWORD:-arbpass}
+      VISIBILITY_POSTGRES_DB: temporal_visibility
+
+      # Создать namespace по умолчанию
+      DEFAULT_NAMESPACE: default
+      DEFAULT_NAMESPACE_RETENTION: 7
+
+    ports:
+      - "7233:7233"
+
+  temporal-ui:
+    image: temporalio/ui:2.25.0
+    container_name: cs2_temporal_ui
+    restart: unless-stopped
+    depends_on:
+      - temporal
+    environment:
+      # Явно указываем адрес Temporal Frontend
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000,http://localhost:8233
+    ports:
+      - "8233:8080"
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: services/gateway/Dockerfile
+    container_name: cs2_gateway
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_DSN: ${DB_DSN}
+      GATEWAY_ADDR: ${GATEWAY_ADDR}
+      REDIS_ADDR: ${REDIS_ADDR} 
+    ports:
+      - "8088:8088"
+    depends_on:
+      - postgres
+
+  price-collector:
+    build:
+      context: ..
+      dockerfile: services/price-collector/Dockerfile
+    container_name: cs2_price_collector
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      PRICES_TOPIC: ${PRICES_TOPIC}
+      POLL_MS: ${POLL_MS}
+      SOURCES: ${SOURCES}
+    depends_on:
+      - kafka
+
+  price-aggregator:
+    build:
+      context: ..
+      dockerfile: services/price-aggregator/Dockerfile
+    container_name: cs2_price_aggregator
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      PRICES_TOPIC: ${PRICES_TOPIC}
+      REDIS_ADDR: ${REDIS_ADDR}
+      CLICKHOUSE_ADDR: ${CLICKHOUSE_ADDR}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    depends_on:
+      - kafka
+      - redis
+      - clickhouse
+
+  fees-fx:
+    build:
+      context: ..
+      dockerfile: services/fees-fx/Dockerfile
+    container_name: cs2_fees_fx
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_DSN: ${DB_DSN}
+      FEES_CONFIG: ${FEES_CONFIG}
+    volumes:
+      - ./config:/config:ro
+    ports:
+      - "8090:8090"
+    depends_on:
+      - postgres
+
+  opportunity-engine:
+    build:
+      context: ..
+      dockerfile: services/opportunity-engine/Dockerfile
+    container_name: cs2_opportunity_engine
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      PRICES_TOPIC: ${PRICES_TOPIC}
+      OPPORTUNITIES_TOPIC: opportunities
+      FEESFX_URL: http://fees-fx:8090/compute
+    depends_on:
+      - kafka
+      - fees-fx
+
+
+      
+networks:
+  default:
+    name: cs2-net
+
+volumes:
+  pgdata:
+  redisdata:
+  rabbitmqdata:
+  clickhousedata:
+  temporaldata:
