@@ -21,6 +21,22 @@ type FeeConfig struct {
 
 var cfg *FeeConfig
 
+type NetSpreadParams struct {
+	BuyPrice  float64
+	SellPrice float64
+	BuyFee    MarketFee
+	SellFee   MarketFee
+	FXRate    float64
+}
+
+func computeNetSpread(p NetSpreadParams) (netBuy, netSell, spread float64) {
+	netBuy = p.BuyPrice*(1+float64(p.BuyFee.BuyBps)/10000.0) + p.BuyFee.Fixed
+	sellPrice := p.SellPrice * p.FXRate
+	netSell = sellPrice*(1-float64(p.SellFee.SellBps)/10000.0) - p.SellFee.Fixed
+	spread = (netSell - netBuy) / netBuy * 10000
+	return
+}
+
 func main() {
 	path := os.Getenv("FEES_CONFIG")
 	if path == "" {
@@ -50,14 +66,21 @@ func computeHandler(w http.ResponseWriter, r *http.Request) {
 	sellPrice, _ := strconv.ParseFloat(r.URL.Query().Get("sell_price"), 64)
 	buyMarket := r.URL.Query().Get("buy_market")
 	sellMarket := r.URL.Query().Get("sell_market")
+	fxRateStr := r.URL.Query().Get("fx_rate")
+	fxRate := 1.0
+	if fxRateStr != "" {
+		fxRate, _ = strconv.ParseFloat(fxRateStr, 64)
+	}
 
-	buyFee := cfg.Markets[buyMarket]
-	sellFee := cfg.Markets[sellMarket]
+	params := NetSpreadParams{
+		BuyPrice:  buyPrice,
+		SellPrice: sellPrice,
+		BuyFee:    cfg.Markets[buyMarket],
+		SellFee:   cfg.Markets[sellMarket],
+		FXRate:    fxRate,
+	}
 
-	netBuy := buyPrice*(1+float64(buyFee.BuyBps)/10000.0) + buyFee.Fixed
-	netSell := sellPrice*(1-float64(sellFee.SellBps)/10000.0) - sellFee.Fixed
-
-	spread := (netSell - netBuy) / netBuy * 10000 // в bps
+	netBuy, netSell, spread := computeNetSpread(params)
 
 	resp := map[string]any{
 		"net_buy":    netBuy,
